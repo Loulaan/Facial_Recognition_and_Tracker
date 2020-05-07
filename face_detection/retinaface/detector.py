@@ -22,7 +22,8 @@ class RetinaFace:
         gpu_id=-1,
         network="mobilenet",
     ):
-        model_path = relative("weights/mobilenet0.25_Final.pth") if network=='mobilenet' else relative("weights/Resnet50_Final.pth")
+        model_path = f'{os.getcwd()}/weights/retinaface/mobilenet0.25_Final.pth' if network=='mobilenet' else \
+            f'{os.getcwd()}/weights/retinaface/Resnet50_Final.pth'
         self.gpu_id = gpu_id
         self.device = (
             torch.device("cpu") if gpu_id == -1 else torch.device("cuda", gpu_id)

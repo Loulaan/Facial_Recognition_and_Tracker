@@ -1,18 +1,33 @@
-# from .data.data_pipe import de_preprocess, get_train_loader, get_val_data
-import bcolz
+import os
+import math
 
-from .model import Backbone, Arcface, MobileFaceNet, Am_softmax, l2_norm
-from .verifacation import evaluate
-import torch
-from torch import optim
-from torchvision.datasets import ImageFolder
-from torch.utils.data import DataLoader
 import numpy as np
+import bcolz
+from pathlib import Path
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
-from .utils import get_time, hflip_batch, separate_bn_paras
+import torch
+from torch import optim
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader
 from torchvision import transforms as trans
-import math
+from torchvision.datasets import ImageFolder
+
+from .model import Backbone, Arcface, MobileFaceNet, l2_norm
+from .utils import get_time, hflip_batch, separate_bn_paras
+from .verifacation import evaluate
+
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+root_path = Path(os.getcwd())
+work_path = root_path/'arcface'
+data_path = root_path/'data'
+log_path = work_path/'logs'
+threshold = 1.5
+
+# for training on emore dataset
+emore_folder = data_path/'faces_emore'
+model_path = work_path/'models'
 
 
 def get_train_dataset(imgs_folder):
@@ -39,43 +54,46 @@ def get_val_data(data_path):
     return agedb_30, cfp_fp, lfw, agedb_30_issame, cfp_fp_issame, lfw_issame
 
 
-def get_train_loader(conf):
-    if conf.data_mode == 'emore':
-        ds, class_num = get_train_dataset(conf.emore_folder/'imgs')
-    loader = DataLoader(ds, batch_size=conf.batch_size, shuffle=True, pin_memory=conf.pin_memory, num_workers=conf.num_workers)
+def get_train_loader():
+    ds, class_num = get_train_dataset(emore_folder/'imgs')
+    loader = DataLoader(ds, batch_size=100, shuffle=True, pin_memory=True, num_workers=3)
     return loader, class_num
 
 
 class face_learner(object):
-    def __init__(self, conf, inference=False):
-        if conf.use_mobilfacenet:
-            self.model = MobileFaceNet(conf.embedding_size).to(conf.device)
-        else:
-            self.model = Backbone(conf.net_depth, conf.drop_ratio, conf.net_mode).to(conf.device)
+
+    def __init__(self, inference=False, backbone='mobilefacenet'):
+        if backbone == 'mobilefacenet':
+            self.model = MobileFaceNet().to(device)
+        if backbone == 'ir_50':
+            self.model = Backbone(50, 0.6, 'ir_se').to(device)
 
         if not inference:
-            self.milestones = conf.milestones
-            self.loader, self.class_num = get_train_loader(conf)
+            self.batch_size = 100
+            self.lr = 1e-3
+            self.momentum = 0.9
+            self.milestones = [12, 15, 18]
+            self.loader, self.class_num = get_train_loader()
 
-            self.writer = SummaryWriter(conf.log_path)
+            self.writer = SummaryWriter(log_path)
             self.step = 0
-            self.head = Arcface(embedding_size=conf.embedding_size, classnum=self.class_num).to(conf.device)
+            self.head = Arcface(classnum=self.class_num).to(device)
 
             print('two model heads generated')
 
             paras_only_bn, paras_wo_bn = separate_bn_paras(self.model)
 
-            if conf.use_mobilfacenet:
+            if backbone == 'mobilefacenet':
                 self.optimizer = optim.SGD([
                     {'params': paras_wo_bn[:-1], 'weight_decay': 4e-5},
                     {'params': [paras_wo_bn[-1]] + [self.head.kernel], 'weight_decay': 4e-4},
                     {'params': paras_only_bn}
-                ], lr=conf.lr, momentum=conf.momentum)
-            else:
+                ], lr=self.lr, momentum=self.momentum)
+            if backbone == 'ir50':
                 self.optimizer = optim.SGD([
                     {'params': paras_wo_bn + [self.head.kernel], 'weight_decay': 5e-4},
                     {'params': paras_only_bn}
-                ], lr=conf.lr, momentum=conf.momentum)
+                ], lr=self.lr, momentum=self.momentum)
 
             self.board_loss_every = len(self.loader) // 100
             self.evaluate_every = len(self.loader) // 10
@@ -83,13 +101,10 @@ class face_learner(object):
             self.agedb_30, self.cfp_fp, self.lfw, self.agedb_30_issame, self.cfp_fp_issame, self.lfw_issame = get_val_data(
                 self.loader.dataset.root.parent)
         else:
-            self.threshold = conf.threshold
+            self.threshold = threshold
 
-    def save_state(self, conf, accuracy, to_save_folder=False, extra=None, model_only=False):
-        if to_save_folder:
-            save_path = conf.save_path
-        else:
-            save_path = conf.model_path
+    def save_state(self, accuracy, extra=None, model_only=False):
+        save_path = model_path
         torch.save(
             self.model.state_dict(), save_path /
             ('model_{}_accuracy:{}_step:{}_{}.pth'.format(get_time(), accuracy, self.step, extra)))
@@ -106,33 +121,32 @@ class face_learner(object):
         self.writer.add_scalar('{}_best_threshold'.format(db_name), best_threshold, self.step)
         self.writer.add_image('{}_roc_curve'.format(db_name), roc_curve_tensor, self.step)
 
-    def evaluate(self, conf, carray, issame, nrof_folds=5, tta=False):
+    def evaluate(self, carray, issame, nrof_folds=5, tta=False):
         self.model.eval()
         idx = 0
-        embeddings = np.zeros([len(carray), conf.embedding_size])
+        embeddings = np.zeros([len(carray), 512])
         with torch.no_grad():
-            while idx + conf.batch_size <= len(carray):
-                batch = torch.tensor(carray[idx:idx + conf.batch_size])
+            while idx + self.batch_size <= len(carray):
+                batch = torch.tensor(carray[idx:idx + self.batch_size])
                 if tta:
                     fliped = hflip_batch(batch)
-                    emb_batch = self.model(batch.to(conf.device)) + self.model(fliped.to(conf.device))
-                    embeddings[idx:idx + conf.batch_size] = l2_norm(emb_batch)
+                    emb_batch = self.model(batch.to(device)) + self.model(fliped.to(device))
+                    embeddings[idx:idx + self.batch_size] = l2_norm(emb_batch)
                 else:
-                    embeddings[idx:idx + conf.batch_size] = self.model(batch.to(conf.device)).cpu()
-                idx += conf.batch_size
+                    embeddings[idx:idx + self.batch_size] = self.model(batch.to(device)).cpu()
+                idx += self.batch_size
             if idx < len(carray):
                 batch = torch.tensor(carray[idx:])            
                 if tta:
                     fliped = hflip_batch(batch)
-                    emb_batch = self.model(batch.to(conf.device)) + self.model(fliped.to(conf.device))
+                    emb_batch = self.model(batch.to(device)) + self.model(fliped.to(device))
                     embeddings[idx:] = l2_norm(emb_batch)
                 else:
-                    embeddings[idx:] = self.model(batch.to(conf.device)).cpu()
+                    embeddings[idx:] = self.model(batch.to(device)).cpu()
         tpr, fpr, accuracy, best_thresholds = evaluate(embeddings, issame, nrof_folds)
         return accuracy.mean(), best_thresholds.mean()
     
     def find_lr(self,
-                conf,
                 init_value=1e-8,
                 final_value=10.,
                 beta=0.98,
@@ -152,17 +166,15 @@ class face_learner(object):
         log_lrs = []
 
         for i, (imgs, labels) in tqdm(enumerate(self.loader), total=num):
-        # for i, (imgs, labels) in enumerate(self.loader):
-
-            imgs = imgs.to(conf.device)
-            labels = labels.to(conf.device)
+            imgs = imgs.to(device)
+            labels = labels.to(device)
             batch_num += 1          
 
             self.optimizer.zero_grad()
 
             embeddings = self.model(imgs)
             thetas = self.head(embeddings, labels)
-            loss = conf.ce_loss(thetas, labels)          
+            loss = CrossEntropyLoss(thetas, labels)
           
             # Compute the smoothed loss
             avg_loss = beta * avg_loss + (1 - beta) * loss.item()
@@ -172,7 +184,6 @@ class face_learner(object):
             # Stop if the loss is exploding
             if batch_num > 1 and smoothed_loss > bloding_scale * best_loss:
                 print('exited with best_loss at {}'.format(best_loss))
-                # plt.plot(log_lrs[10:-5], losses[10:-5])
                 return log_lrs, losses
             # Record the best loss
             if smoothed_loss < best_loss or batch_num == 1:
@@ -191,10 +202,9 @@ class face_learner(object):
             for params in self.optimizer.param_groups:
                 params['lr'] = lr
             if batch_num > num:
-                # plt.plot(log_lrs[10:-5], losses[10:-5])
                 return log_lrs, losses    
 
-    def train(self, conf, epochs):
+    def train(self, epochs):
         self.model.train()
         running_loss = 0.
         for e in range(epochs):
@@ -206,13 +216,12 @@ class face_learner(object):
             if e == self.milestones[2]:
                 self.schedule_lr()                                 
             for imgs, labels in tqdm(iter(self.loader)):
-            # for imgs, labels in iter(self.loader):
-                imgs = imgs.to(conf.device)
-                labels = labels.to(conf.device)
+                imgs = imgs.to(device)
+                labels = labels.to(device)
                 self.optimizer.zero_grad()
                 embeddings = self.model(imgs)
                 thetas = self.head(embeddings, labels)
-                loss = conf.ce_loss(thetas, labels)
+                loss = CrossEntropyLoss(thetas, labels)
                 loss.backward()
                 running_loss += loss.item()
                 self.optimizer.step()
@@ -223,19 +232,18 @@ class face_learner(object):
                     running_loss = 0.
                 
                 if self.step % self.evaluate_every == 0 and self.step != 0:
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.agedb_30, self.agedb_30_issame)
+                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(self.agedb_30, self.agedb_30_issame)
                     self.board_val('agedb_30', accuracy, best_threshold, roc_curve_tensor)
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.lfw, self.lfw_issame)
+                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(self.lfw, self.lfw_issame)
                     self.board_val('lfw', accuracy, best_threshold, roc_curve_tensor)
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.cfp_fp, self.cfp_fp_issame)
+                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(self.cfp_fp, self.cfp_fp_issame)
                     self.board_val('cfp_fp', accuracy, best_threshold, roc_curve_tensor)
                     self.model.train()
                 if self.step % self.save_every == 0 and self.step != 0:
-                    self.save_state(conf, accuracy)
-                    
+                    self.save_state(accuracy)
                 self.step += 1
                 
-        self.save_state(conf, accuracy, to_save_folder=True, extra='final')
+        self.save_state(accuracy, extra='final')
 
     def schedule_lr(self):
         for params in self.optimizer.param_groups:                 
