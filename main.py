@@ -5,11 +5,22 @@ from pathlib import Path
 import torch
 import cv2
 import numpy as np
+from torch.autograd import Variable
 
 from face_detection import RetinaFace
 from arcface.Learner import face_learner
 from facenet import InceptionResnetV1
 from torchvision import transforms as trans
+
+from yolov3.util import *
+from yolov3.darknet import Darknet
+import pickle as pkl
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# TODO move all models into their classes in models.py
 
 working_dir = os.getcwd()
 
@@ -22,6 +33,7 @@ test_transform = trans.Compose([
 ])
 
 
+# TODO refactor Pipeline (make separate class for face processing)
 class Pipeline:
 
     def __init__(self, cap_name='0', update_facebank=False):
@@ -179,5 +191,73 @@ class Pipeline:
         cv2.destroyAllWindows()
 
 
-pipeline = Pipeline(cap_name='video3.mp4', update_facebank=True)
-pipeline.start()
+class YoloV3:
+
+    def __init__(self, show_frames=False):
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.show_frames = show_frames
+        self.cfgfile = "yolov3/cfg/yolov3.cfg"
+        self.weightsfile = "weights/yolov3/yolov3.weights"
+
+        self.num_classes = 80
+        self.confidence = 0.25
+        self.nms_thesh = 0.4
+        self.bbox_attrs = 5 + self.num_classes
+
+        self.model = Darknet(self.cfgfile).to(device)
+        self.model.net_info["height"] = 320
+
+        self.inp_dim = int(self.model.net_info["height"])
+
+        self.classes = load_classes('yolov3/data/coco.names')
+        self.colors = pkl.load(open("yolov3/pallete", "rb"))
+
+        self.model.load_weights(self.weightsfile)
+
+    @staticmethod
+    def prep_frame(frame, inp_dim):
+        """
+        Prepare image for inputting to the neural network.
+
+        :return: scaled_img, orig_img and dim (w, h)
+        """
+        orig_im = frame
+        dim = orig_im.shape[1], orig_im.shape[0]
+        img = cv2.resize(orig_im, (inp_dim, inp_dim))
+        img_ = img[:, :, ::-1].transpose((2, 0, 1)).copy()
+        img_ = torch.from_numpy(img_).float().div(255.0).unsqueeze(0)
+        return img_, orig_im, dim
+
+    def infer(self, frame):
+        """
+        :param frame: input frame
+        :return: list of coords (x1, y1, x2, y2) of localized persons stored on cpu
+        """
+        bboxes = []
+        img, orig_im, dim = self.prep_frame(frame, self.inp_dim)
+        output = self.model(Variable(img).to(device))
+        output = write_results(output, self.confidence, self.num_classes, nms=True, nms_conf=self.nms_thesh)
+
+        output[:, 1:5] = torch.clamp(output[:, 1:5], 0.0, float(self.inp_dim)) / self.inp_dim
+        output[:, [1, 3]] *= orig_im.shape[1]
+        output[:, [2, 4]] *= orig_im.shape[0]
+
+        for detection in output:
+            label = f"{self.classes[int(detection[-1])]}"
+            if label != "person":
+                continue
+            c1 = tuple(detection[1:3].int().to('cpu'))
+            c2 = tuple(detection[3:5].int().to('cpu'))
+            bboxes.append([c1[0], c1[1], c2[0], c2[1]])
+
+        if self.show_frames:
+            for bbox in bboxes:
+                cv2.rectangle(orig_im, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+            cv2.imshow('img', orig_im)
+            cv2.waitKey()
+
+        return bboxes
+
+
+yolo = YoloV3(show_frames=True)
+print(yolo.infer(cv2.imread('data/parni.jpg')))
