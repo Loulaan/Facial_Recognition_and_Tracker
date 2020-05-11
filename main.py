@@ -5,17 +5,18 @@ from pathlib import Path
 import torch
 import cv2
 import numpy as np
-from torch.autograd import Variable
 
 from face_detection import RetinaFace
 from arcface.Learner import face_learner
 from facenet import InceptionResnetV1
 from torchvision import transforms as trans
 
-from yolov3.util import *
-from yolov3.darknet import Darknet
-import pickle as pkl
+# TODO clean deepsort folder
+from deepsort.deep_sort import build_tracker
+from deepsort.detector import build_detector
 
+
+from utils import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -34,7 +35,7 @@ test_transform = trans.Compose([
 
 
 # TODO refactor Pipeline (make separate class for face processing)
-class Pipeline:
+class FaceDetector:
 
     def __init__(self, cap_name='0', update_facebank=False):
 
@@ -140,8 +141,7 @@ class Pipeline:
         names.append('-1')  # for undefined persons
 
         source_embeddings = []
-        for face in faces:
-            bbox, _, _ = face
+        for bbox in faces:
             source_embeddings.append(self.calculate_embeddings(frame, bbox))
 
         diff = torch.cat(source_embeddings).unsqueeze(-1) - \
@@ -149,9 +149,7 @@ class Pipeline:
         dist = torch.sum(torch.pow(diff, 2), dim=1)  # #detected_faces x #persons_in_facebank (dataset2 = 1x5)
         min_score, min_idx = torch.min(dist, dim=1)
         min_idx[min_score > self.threshold] = -1  # filtering preds
-        for idx, face in enumerate(faces):
-            frame = self.draw_boxes_and_names(face[0], names[int(min_idx[idx])], min_score[idx], frame)
-        return frame
+        return faces, min_idx.to('cpu').numpy()
 
     def detect_faces(self, frame):
         faces = self.face_detector.detect(frame)
@@ -162,7 +160,7 @@ class Pipeline:
                 if score < 0.6:
                     continue
                 bbox = bbox.astype(np.int) + [-5, -5, 5, 5]  # broadcast bboxes with 5 px
-                filtered_face.append([bbox, landmarks, score])
+                filtered_face.append(bbox)
 
         return filtered_face
 
@@ -191,73 +189,106 @@ class Pipeline:
         cv2.destroyAllWindows()
 
 
-class YoloV3:
-
+class Tracker:
     def __init__(self, show_frames=False):
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.deepsort = build_tracker(use_cuda=True)
+        self.palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
         self.show_frames = show_frames
-        self.cfgfile = "yolov3/cfg/yolov3.cfg"
-        self.weightsfile = "weights/yolov3/yolov3.weights"
+        self.detector = build_detector(True)
 
-        self.num_classes = 80
-        self.confidence = 0.25
-        self.nms_thesh = 0.4
-        self.bbox_attrs = 5 + self.num_classes
-
-        self.model = Darknet(self.cfgfile).to(device)
-        self.model.net_info["height"] = 320
-
-        self.inp_dim = int(self.model.net_info["height"])
-
-        self.classes = load_classes('yolov3/data/coco.names')
-        self.colors = pkl.load(open("yolov3/pallete", "rb"))
-
-        self.model.load_weights(self.weightsfile)
-
-    @staticmethod
-    def prep_frame(frame, inp_dim):
+    def compute_color_for_labels(self, label):
         """
-        Prepare image for inputting to the neural network.
-
-        :return: scaled_img, orig_img and dim (w, h)
+        Simple function that adds fixed color depending on the class
         """
-        orig_im = frame
-        dim = orig_im.shape[1], orig_im.shape[0]
-        img = cv2.resize(orig_im, (inp_dim, inp_dim))
-        img_ = img[:, :, ::-1].transpose((2, 0, 1)).copy()
-        img_ = torch.from_numpy(img_).float().div(255.0).unsqueeze(0)
-        return img_, orig_im, dim
+        color = [int((p * (label ** 2 - label + 1)) % 255) for p in self.palette]
+        return tuple(color)
 
     def infer(self, frame):
-        """
-        :param frame: input frame
-        :return: list of coords (x1, y1, x2, y2) of localized persons stored on cpu
-        """
-        bboxes = []
-        img, orig_im, dim = self.prep_frame(frame, self.inp_dim)
-        output = self.model(Variable(img).to(device))
-        output = write_results(output, self.confidence, self.num_classes, nms=True, nms_conf=self.nms_thesh)
+        bbox_xywh, cls_conf, cls_ids = self.detector(frame)
+        if len(bbox_xywh) == 0:
+            return
 
-        output[:, 1:5] = torch.clamp(output[:, 1:5], 0.0, float(self.inp_dim)) / self.inp_dim
-        output[:, [1, 3]] *= orig_im.shape[1]
-        output[:, [2, 4]] *= orig_im.shape[0]
+        # select person class
+        mask = cls_ids == 0
 
-        for detection in output:
-            label = f"{self.classes[int(detection[-1])]}"
-            if label != "person":
-                continue
-            c1 = tuple(detection[1:3].int().to('cpu'))
-            c2 = tuple(detection[3:5].int().to('cpu'))
-            bboxes.append([c1[0], c1[1], c2[0], c2[1]])
+        bbox_xywh = bbox_xywh[mask]
+        cls_conf = cls_conf[mask]
+
+        outputs = self.deepsort.update(bbox_xywh, cls_conf, frame)
+        if len(outputs) == 0:
+            return
+        bbox_xyxy = outputs[:, :4]
+        identities = outputs[:, -1]
 
         if self.show_frames:
-            for bbox in bboxes:
-                cv2.rectangle(orig_im, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-            cv2.imshow('img', orig_im)
-            cv2.waitKey()
+            for i, box in enumerate(bbox_xyxy):
+                x1, y1, x2, y2 = box
+                # box text and bar
+                id = int(identities[i]) if identities is not None else 0
+                color = self.compute_color_for_labels(id)
+                label = '{}{:d}'.format("", id)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                cv2.putText(frame, label, (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
+        return bbox_xyxy, identities
 
-        return bboxes
+
+class Pipeline:
+    def __init__(self):
+
+        self.face_identificator = FaceDetector('data/dataset2/video3.mp4')
+        self.tracker = Tracker()
+
+    def postprocess(self, bboxes, faces, idx, identities):
+        verified_bboxes = []
+        verified_identities = []
+
+        for i, face in enumerate(faces):
+            for j, bbox in enumerate(bboxes):
+                # TODO fix this
+                IoU = intersection_over_union(face, bbox)
+                if IoU != 0:
+                    verified_bboxes.append(bbox)
+                    verified_identities.append([identities[j], idx[i]])
+                    break
+        return verified_bboxes, verified_identities
+
+    def infer(self):
+
+        cap = cv2.VideoCapture('data/dataset2/video3.mp4')
+
+        while True:
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                faces, idx = self.face_identificator.verify_faces(frame)
+                try:
+                    bboxes, identities = self.tracker.infer(frame)
+                except TypeError:
+                    continue
+                if len(bboxes) == 0:
+                    continue
+
+                bboxes, identities = self.postprocess(bboxes, faces, idx, identities)
+
+                names_identity = list(self.face_identificator.saved_embeddings.keys())
+                for i, box in enumerate(bboxes):
+                    x1, y1, x2, y2 = box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                    cv2.putText(frame, names_identity[identities[i][1]], (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
 
 
-yolo = YoloV3(show_frames=True)
-print(yolo.infer(cv2.imread('data/parni.jpg')))
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                if frame is not None:
+                    cv2.imshow("Verified", frame)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            else:
+                break
+
+
+
+pipe = Pipeline()
+pipe.infer()
