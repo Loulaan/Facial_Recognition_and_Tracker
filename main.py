@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from pathlib import Path
+from collections import Counter
 
 import torch
 import cv2
@@ -149,7 +150,8 @@ class FaceDetector:
         dist = torch.sum(torch.pow(diff, 2), dim=1)  # #detected_faces x #persons_in_facebank (dataset2 = 1x5)
         min_score, min_idx = torch.min(dist, dim=1)
         min_idx[min_score > self.threshold] = -1  # filtering preds
-        return faces, min_idx.to('cpu').numpy()
+        min_score[min_score > self.threshold] = 10
+        return faces, min_idx.to('cpu').numpy(), min_score.to('cpu').numpy()
 
     def detect_faces(self, frame):
         faces = self.face_detector.detect(frame)
@@ -157,7 +159,7 @@ class FaceDetector:
         if faces is not None:
             for face in faces:
                 bbox, landmarks, score = face
-                if score < 0.6:
+                if score < 0.8:
                     continue
                 bbox = bbox.astype(np.int) + [-5, -5, 5, 5]  # broadcast bboxes with 5 px
                 filtered_face.append(bbox)
@@ -214,6 +216,11 @@ class Tracker:
         bbox_xywh = bbox_xywh[mask]
         cls_conf = cls_conf[mask]
 
+        # select high conf bboxes
+        mask = cls_conf > 0.7
+        bbox_xywh = bbox_xywh[mask]
+        cls_conf = cls_conf[mask]
+
         outputs = self.deepsort.update(bbox_xywh, cls_conf, frame)
         if len(outputs) == 0:
             return
@@ -237,57 +244,130 @@ class Pipeline:
 
         self.face_identificator = FaceDetector('data/dataset2/video3.mp4')
         self.tracker = Tracker()
+        self.names_identity = list(self.face_identificator.saved_embeddings.keys())
+        self.saved_scores = dict(zip(self.names_identity, [10 for name in self.names_identity]))
+        self.mapped_tracks = {}
+        self.update_mapped_tracks = True
 
-    def postprocess(self, bboxes, faces, idx, identities):
+    def map_faces_with_persons(self, bboxes, faces, idx, identities):
         verified_bboxes = []
         verified_identities = []
 
-        for i, face in enumerate(faces):
-            for j, bbox in enumerate(bboxes):
+        for i, bbox in enumerate(bboxes):
+            for j, face in enumerate(faces):
                 # TODO fix this
                 IoU = intersection_over_union(face, bbox)
                 if IoU != 0:
+                    # print('IoU: ', IoU)
                     verified_bboxes.append(bbox)
-                    verified_identities.append([identities[j], idx[i]])
+                    verified_identities.append([identities[i], idx[j]])
                     break
+        # print('Len bboxes', len(verified_bboxes), ' | Len identities', len(verified_identities))
         return verified_bboxes, verified_identities
+
+    def compare_scores(self, identities, new_scores):
+        compared_identities = []
+        # print(new_scores)
+        for i, identities in enumerate(identities):
+            new_track_name = self.names_identity[identities[1]]
+            old_track_name = self.mapped_tracks[identities[0]][0]
+            try:
+                # TODO find out what is the wrong case
+                score = new_scores[i]
+            except IndexError:
+                print("Error")
+            if self.mapped_tracks[identities[0]][1] > score:
+                # Если расстояние до старого имени больше, обновляем расстояние и имя
+                self.mapped_tracks[identities[0]][1] = score
+                self.mapped_tracks[identities[0]][0] = new_track_name
+                compared_identities.append(new_track_name)
+            else:
+                # В противном случае считаем, что идентификация было ложно положительной
+                compared_identities.append(old_track_name)
+        return compared_identities
+
+    def draw_results(self, frame, bbox, person, score):
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, f'{person}_{round(float(score), 3)}', (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
+
+        return frame
+
 
     def infer(self):
 
         cap = cv2.VideoCapture('data/dataset2/video3.mp4')
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        # out = cv2.VideoWriter(f'data/dataset2/processed_video_test.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
 
         while True:
             ret, frame = cap.read()
             if ret:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                faces, idx = self.face_identificator.verify_faces(frame)
+                try:
+                    faces, idx, verif_scores = self.face_identificator.verify_faces(frame)
+                except ValueError:
+                    faces = None
+
                 try:
                     bboxes, identities = self.tracker.infer(frame)
                 except TypeError:
                     continue
+
                 if len(bboxes) == 0:
                     continue
 
-                bboxes, identities = self.postprocess(bboxes, faces, idx, identities)
+                # TODO пофиксить снижение устойчивости треков
+                # # show tracked bboxes
+                # for i, bbox in enumerate(bboxes):
+                #     frame = self.draw_results(frame, bbox, identities[i], '1')
+                # cv2.imshow('Frame', frame)
+                # if cv2.waitKey(1) & 0xFF == ord('q'):
+                #     break
+                # continue
 
-                names_identity = list(self.face_identificator.saved_embeddings.keys())
-                for i, box in enumerate(bboxes):
-                    x1, y1, x2, y2 = box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-                    cv2.putText(frame, names_identity[identities[i][1]], (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
+                for ident in identities:
+                    if ident not in list(self.mapped_tracks.keys()):
+                        self.mapped_tracks[ident] = ['Undefined', 10.0]
 
+                if faces is not None:
+                    mapped_bboxes, identities = self.map_faces_with_persons(bboxes, faces, idx, identities)
+                    # print('Len bboxes', len(bboxes), ' | Len identities', len(identities))
+                    # if self.update_mapped_tracks:
+                    #     self.update_mapped_tracks = False
+                    #     for i, ident in enumerate(identities):
+                    #         # Начальный маппинг
+                    #         self.mapped_tracks[ident[0]] = [self.names_identity[ident[1]], 10.0]
+                    # Обновление маппинга
+                    self.compare_scores(identities, verif_scores)
+
+                    # Отрисовка результатов
+                    for i, box in enumerate(bboxes):
+                        frame = self.draw_results(frame, box, self.mapped_tracks[i + 1][0], self.mapped_tracks[i + 1][1])
+
+                # elif self.update_mapped_tracks:
+                #     for i, box in enumerate(bboxes):
+                #         frame = self.draw_results(frame, box, 'Undefined', '1.0')
+
+                else:
+                    for i, box in enumerate(bboxes):
+                        frame = self.draw_results(frame, box, self.mapped_tracks[i + 1][0], self.mapped_tracks[i + 1][1])
 
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
                 if frame is not None:
                     cv2.imshow("Verified", frame)
+                    # out.write(frame)
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
             else:
                 break
-
+        cap.release()
+        # out.release()
+        cv2.destroyAllWindows()
 
 
 pipe = Pipeline()
