@@ -32,9 +32,10 @@ def draw_boxes_and_names(bbox, name, score, frame):
 
 
 def draw_results(frame, bbox, person, score):
-    x1, y1, x2, y2 = bbox
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    cv2.putText(frame, f'{person}_{round(float(score), 3)}', (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
+    if person is not 'Undefined':
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f'{person}_{round(float(score), 3)}', (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
     return frame
 
 

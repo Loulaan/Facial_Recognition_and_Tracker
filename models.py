@@ -44,7 +44,7 @@ class FaceIdentificator:
         self.update_facebank = update_facebank
         self.facenet = InceptionResnetV1(pretrained='vggface2', device=device).eval()
         self.face_detector = FaceDetector()
-        self.threshold = 1.54
+        self.threshold = 0.8
         self.dataset = dataset
         self.saved_embeddings = {}
         self.prepare_facebank()  # Create facebank

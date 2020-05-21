@@ -97,7 +97,7 @@ class Pipeline:
             # Create ident info for new tracks
             for ident in identities:
                 if ident not in list(self.mapped_tracks.keys()):
-                    self.mapped_tracks[ident] = ['Undefined', 10.0]
+                    self.mapped_tracks[ident] = ['Undefined', self.face_identificator.threshold]
 
             if faces is not None:
                 mapped_bboxes, identities = self.map_faces_with_persons(bboxes, faces, idx, identities)
@@ -121,6 +121,6 @@ class Pipeline:
         cv2.destroyAllWindows()
 
 
-pipe = Pipeline(update_facebank=True, show_results=True, video_path=f'{os.getcwd()}/data/dataset2/video2.mp4',
+pipe = Pipeline(update_facebank=False, show_results=True, video_path=f'{os.getcwd()}/data/dataset2/video2.mp4',
                 save=False)
 pipe.infer()
