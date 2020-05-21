@@ -1,18 +1,17 @@
-import os
 from pathlib import Path
 
 import torch
 import cv2
 import numpy as np
 
-from face_detection import RetinaFace
+from YOLOv3 import build_detector
+from deepsort import build_tracker
+from retinaface import RetinaFace
 from facenet import InceptionResnetV1
-
-# TODO clean deepsort folder
-from deepsort.deep_sort import build_tracker
-from deepsort.detector import build_detector
-
 from utils import convert_bbox_2_img_area, device
+
+
+torch.set_grad_enabled(False)
 
 
 class FaceDetector:
@@ -62,7 +61,7 @@ class FaceIdentificator:
                     img = cv2.imread(str(file))
                     faces = self.face_detector(img)
                     if faces is not None:
-                        box, landmarks, score = faces[0]
+                        box = faces[0]
                         embs.append(self.calculate_embeddings(img, box, True))
                 if len(embs) == 0:
                     continue

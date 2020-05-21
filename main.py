@@ -1,13 +1,10 @@
 import os
 from datetime import datetime
 
-import torch
 import cv2
 
 from utils import draw_results, intersection_over_union, is_proper_predictions
 from models import FaceIdentificator, Tracker
-
-torch.set_grad_enabled(False)
 
 
 class Pipeline:
@@ -124,5 +121,6 @@ class Pipeline:
         cv2.destroyAllWindows()
 
 
-pipe = Pipeline(False, True, f'{os.getcwd()}/data/dataset2/video3.mp4', False)
+pipe = Pipeline(update_facebank=True, show_results=True, video_path=f'{os.getcwd()}/data/dataset2/video2.mp4',
+                save=False)
 pipe.infer()

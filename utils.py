@@ -1,7 +1,8 @@
 import cv2
-from torchvision import transforms as trans
 import torch
 import numpy as np
+from torchvision import transforms as trans
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

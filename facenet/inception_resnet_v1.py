@@ -1,8 +1,6 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-import requests
-from requests.adapters import HTTPAdapter
 import os
 
 
@@ -312,37 +310,16 @@ def load_weights(mdl, name):
         ValueError: If 'pretrained' not equal to 'vggface2' or 'casia-webface'.
     """
     if name == 'vggface2':
-        features_path = 'https://drive.google.com/uc?export=download&id=1cWLH_hPns8kSfMz9kKl9PsG5aNV2VSMn'
-        logits_path = 'https://drive.google.com/uc?export=download&id=1mAie3nzZeno9UIzFXvmVZrDG3kwML46X'
+        cached_file = f'{os.getcwd()}/weights/facenet/vggface2.pt'
     elif name == 'casia-webface':
-        features_path = 'https://drive.google.com/uc?export=download&id=1LSHHee_IQj5W3vjBcRyVaALv4py1XaGy'
-        logits_path = 'https://drive.google.com/uc?export=download&id=1QrhPgn1bGlDxAil2uc07ctunCQoDnCzT'
+        cached_file = f'{os.getcwd()}/weights/facenet/casia-webface.pt'
     else:
-        raise ValueError('Pretrained models only exist for "vggface2" and "casia-webface"')
-
-    model_dir = os.path.join(get_torch_home(), 'checkpoints')
-    os.makedirs(model_dir, exist_ok=True)
-
-    state_dict = {}
-    for i, path in enumerate([features_path, logits_path]):
-        cached_file = os.path.join(model_dir, '{}_{}.pt'.format(name, path[-10:]))
-        if not os.path.exists(cached_file):
-            print('Downloading parameters ({}/2)'.format(i+1))
-            s = requests.Session()
-            s.mount('https://', HTTPAdapter(max_retries=10))
-            r = s.get(path, allow_redirects=True)
-            with open(cached_file, 'wb') as f:
-                f.write(r.content)
+        raise FileNotFoundError("Weights are not provided!")
+    try:
+        state_dict = {}
         state_dict.update(torch.load(cached_file))
+    except:
+        raise FileNotFoundError("Weights are not found")
 
     mdl.load_state_dict(state_dict)
 
-
-def get_torch_home():
-    torch_home = os.path.expanduser(
-        os.getenv(
-            'TORCH_HOME',
-            os.path.join(os.getenv('XDG_CACHE_HOME', '~/.cache'), 'torch')
-        )
-    )
-    return torch_home
