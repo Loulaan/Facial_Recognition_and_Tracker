@@ -6,28 +6,12 @@ import torch
 from .alignment import load_net, batch_detect
 
 
-def get_project_dir():
-    current_path = os.path.abspath(os.path.join(__file__, "../"))
-    return current_path
-
-
-def relative(path):
-    path = os.path.join(get_project_dir(), path)
-    return os.path.abspath(path)
-
-
 class RetinaFace:
-    def __init__(
-        self,
-        gpu_id=-1,
-        network="mobilenet",
-    ):
+    def __init__(self, gpu_id=-1, network="mobilenet"):
         model_path = f'{os.getcwd()}/weights/retinaface/mobilenet0.25_Final.pth' if network=='mobilenet' else \
             f'{os.getcwd()}/weights/retinaface/Resnet50_Final.pth'
         self.gpu_id = gpu_id
-        self.device = (
-            torch.device("cpu") if gpu_id == -1 else torch.device("cuda", gpu_id)
-        )
+        self.device = (torch.device("cpu") if gpu_id == -1 else torch.device("cuda", gpu_id))
         self.model = load_net(model_path, self.device, network)
 
     def detect(self, images):

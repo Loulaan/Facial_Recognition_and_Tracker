@@ -8,5 +8,5 @@ SCORE_THRESH = 0.5
 NMS_THRESH = 0.4
 
 
-def build_detector(use_cuda=True):
+def build_detector():
     return YOLOv3(CFG, WEIGHT, CLASS_NAMES, score_thresh=SCORE_THRESH, nms_thresh=NMS_THRESH, is_xywh=True)
