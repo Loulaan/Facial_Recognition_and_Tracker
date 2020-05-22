@@ -88,16 +88,33 @@ class Pipeline:
                 fps,
                 size)
 
+        # [face detection and recognition, person detection and tracking, mapping faces with persons]
+        time = [[], [], []]
+
+        initial_time = datetime.now()
+        frames = 0
+
         while True:
             ret, frame = cap.read()
             if not ret:
                 print("Get error while trying to retrieve new frame or video has ended.")
                 break
 
+            frames += 1
+
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+            start_time = datetime.now().microsecond
             faces, idx, verif_scores = self.face_identificator(frame)
+            delta = datetime.now().microsecond - start_time
+            if delta > 0:
+                time[0].append(delta)
+
+            start_time = datetime.now().second
             bboxes, identities = self.tracker(frame)
+            delta = datetime.now().microsecond - start_time
+            if delta > 0:
+                time[1].append(delta)
 
 
             # TODO пофиксить снижение устойчивости треков
@@ -115,6 +132,7 @@ class Pipeline:
                     if ident not in list(self.mapped_tracks.keys()):
                         self.mapped_tracks[ident] = ['Undefined', self.face_identificator.threshold]
                 if is_proper_predictions(faces):
+                    start_time = datetime.now().microsecond
                     mapped_bboxes, identities, scores = self.map_faces_with_persons(
                         bboxes,
                         faces,
@@ -124,6 +142,9 @@ class Pipeline:
                     )
                     # Update mapping
                     self.update_relations(identities, scores)
+                    delta = datetime.now().microsecond - start_time
+                    if delta > 0:
+                        time[2].append(delta)
 
                 if self.show_results:
                     tracks_numbers = list(self.mapped_tracks.keys())
@@ -144,6 +165,8 @@ class Pipeline:
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
+
+
         cap.release()
 
         if self.save:
@@ -151,12 +174,25 @@ class Pipeline:
 
         cv2.destroyAllWindows()
 
+        finish_time = float(frames)/(datetime.now() - initial_time).seconds
+
+        print('\n\nRetinaFace + FaceNet: ', int(average(time[0])),
+              '| YOLOv3 + DeepSort: ', int(average(time[1])),
+              '| Update Relations: ', int(average(time[2])),
+              '\n')
+
+        print('Average FPS: ', finish_time)
+
+
+def average(items):
+    return float(sum(items))/len(items)
+
 
 pipe = Pipeline(
     update_facebank=False,
     show_results=True,
-    dataset_path='data/dataset1',
-    save=True
+    dataset_path='data/dataset4',
+    save=False
 )
 
 pipe.infer()
