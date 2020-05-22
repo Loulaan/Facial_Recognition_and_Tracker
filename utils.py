@@ -13,7 +13,9 @@ test_transform = trans.Compose([
 
 
 def convert_bbox_2_img_area(img, bbox, toTensor=True):
-    face_area = cv2.resize(img[bbox[1]:bbox[3], bbox[0]:bbox[2]], (112, 112), interpolation=cv2.INTER_NEAREST)
+    x1, y1, x2, y2 = [max(0, i) for i in bbox]
+    # face_area = cv2.resize(img[bbox[1]:bbox[3], bbox[0]:bbox[2]], (112, 112), interpolation=cv2.INTER_NEAREST)
+    face_area = cv2.resize(img[y1:y2, x1:x2], (112, 112), interpolation=cv2.INTER_NEAREST)
     normilized_face_area = test_transform(face_area)
     # TODO refactor converting to torch.Tensor
     if toTensor:
@@ -39,22 +41,14 @@ def draw_results(frame, bbox, person, score):
     return frame
 
 
-def intersection_over_union(boxA, boxB):
-
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-
-    interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
-
-    # compute the area of both the prediction and ground-truth rectangles
-    boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
-    boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
-
-    iou = interArea / float(boxAArea + boxBArea - interArea)
-
-    return iou
+def map_face_and_person(face, person):
+    face_center = [(face[2] + face[0])/2, (face[3] + face[1])/2]
+    # Is face center inside person's bbox, y-coord
+    if person[1] < face_center[1] < person[3]:
+        # Is face center inside person's bbox, x-coord
+        if person[0] < face_center[0] < person[2]:
+            return True
+    return False
 
 
 def is_proper_predictions(pred):
