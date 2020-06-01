@@ -2,11 +2,9 @@
 
 ## Pytorch implementation of facial recognition and tracking system
 
-### Demo available at ```https://youtu.be/P7fk3FKjMx4```
+### Demo available [here](https://youtu.be/P7fk3FKjMx4).
 
-## Download and extract weights in the root folder
-#### ```https://yadi.sk/d/wU3zGXtOp8B_9A```
-
+## Download and extract [weights](https://yadi.sk/d/wU3zGXtOp8B_9A) in the root folder.
 
 ## Data organization
 Create folder `data` and place elements as shown below:
