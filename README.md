@@ -2,7 +2,7 @@
 
 ## Pytorch implementation of facial recognition and tracking system
 
-###Demo available at ```https://youtu.be/P7fk3FKjMx4```
+### Demo available at ```https://youtu.be/P7fk3FKjMx4```
 
 ## Download and extract weights in the root folder
 #### ```https://yadi.sk/d/wU3zGXtOp8B_9A```
