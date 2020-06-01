@@ -4,11 +4,11 @@
 
 ###Demo available at ```https://youtu.be/P7fk3FKjMx4```
 
-##Download and extract weights in the root folder
-####```https://yadi.sk/d/wU3zGXtOp8B_9A```
+## Download and extract weights in the root folder
+#### ```https://yadi.sk/d/wU3zGXtOp8B_9A```
 
 
-##Data organization
+## Data organization
 Create folder `data` and place elements as shown below:
 ```angular2
 data/
@@ -24,4 +24,4 @@ data/
     ...
     test_video.mp4
 ```
-Replace `{person}` with names who you want to recognize and track, `test_video` will be detected automatically.
+Replace `{person}` with names who you want to recognize and track; `test_video` will be detected automatically.
